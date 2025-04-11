@@ -1,0 +1,46 @@
+function execute-graphQuery($query){
+    $batchSize = 100
+    $skipResult = 0
+
+    $kqlResult = [System.Collections.Generic.List[object]]::new()
+    try{
+        while ($true) {
+            if ($skipResult -gt 0) {
+                $graphResult = Search-AzGraph -Query $query -First $batchSize -SkipToken $graphResult.SkipToken -ErrorAction Stop
+            }
+            else {
+                $graphResult = Search-AzGraph -Query $query -First $batchSize -ErrorAction Stop
+            }
+                        
+            $kqlResult += $graphResult.data
+            
+            if ($graphResult.data.Count -lt $batchSize) {
+                break;
+            }
+            $skipResult += $skipResult + $batchSize
+        }
+    }
+    catch{
+        $msg = $_.Exception.Message
+        throw $msg
+    }
+    return $kqlResult
+}
+
+
+$serviceIssueQuery ="ServiceHealthResources| where type =~ 'Microsoft.ResourceHealth/events'| mv-expand properties.Impact| mv-expand properties_Impact.ImpactedRegions|extend trackingId = tostring(properties.TrackingId),impactedRegion = properties_Impact_ImpactedRegions,impactedService = tostring(properties_Impact.ImpactedService)|where(properties.EventType == 'ServiceIssue' and properties.LastUpdateTime > ago(3d) and properties.Status == 'Active')|summarize regions = make_set(impactedRegion.ImpactedRegion),ImpactedService =make_set(impactedService), subscriptionId=make_set(subscriptionId) by trackingId| join kind=leftouter (ServiceHealthResources| where type =~ 'Microsoft.ResourceHealth/events'| extend eventType = properties.EventType, status = properties.Status, description = properties.Title, trackingId = tostring(properties.TrackingId), summary = properties.Summary, priority = properties.Priority,link=strcat('https://app.azure.com/h/',tostring(properties.TrackingId)), impactStartTime = properties.ImpactStartTime, impactMitigationTime = todatetime(tolong(properties.ImpactMitigationTime)),impactStartingTime = todatetime(tolong(properties.ImpactStartTime)),LastUpdateTime = todatetime(tolong(properties.LastUpdateTime)) | where (eventType == 'ServiceIssue' and LastUpdateTime > ago(3d) and status == 'Active')|summarize arg_max(LastUpdateTime, *) by trackingId ) on trackingId| project description,trackingId,ImpactedService,regions,impactStartingTime,LastUpdateTime,impactMitigationTime,summary,link,subscriptionId"
+    $serviceIssueQueryResult = execute-graphQuery $serviceIssueQuery
+    "Service Issues Count"
+    $serviceIssueQueryResult.Count
+
+
+$plannedMaintQuery = "ServiceHealthResources| where type =~ 'Microsoft.ResourceHealth/events'| mv-expand properties.Impact| mv-expand properties_Impact.ImpactedRegions | extend trackingId = tostring(properties.TrackingId),impactedRegion = properties_Impact_ImpactedRegions,impactedService = tostring(properties_Impact.ImpactedService)|where(properties.EventType == 'PlannedMaintenance' and properties.ImpactMitigationTime > now() and properties.ImpactStartTime < now(50d) and properties.LastUpdateTime >= ago(50d))|summarize regions = make_set(impactedRegion.ImpactedRegion),ImpactedService =make_set(impactedService), subscriptionId=make_set(subscriptionId) by trackingId| join kind=leftouter (ServiceHealthResources| where type =~ 'Microsoft.ResourceHealth/events'| extend eventType = properties.EventType, status = properties.Status, description = properties.Title, trackingId = tostring(properties.TrackingId), summary = properties.Summary, priority = properties.Priority,link=strcat('https://app.azure.com/h/',tostring(properties.TrackingId)), impactStartTime = properties.ImpactStartTime, impactMitigationTime = todatetime(tolong(properties.ImpactMitigationTime)),impactStartingTime = todatetime(tolong(properties.ImpactStartTime)),LastUpdateTime = todatetime(tolong(properties.LastUpdateTime)) | where (properties.EventType == 'PlannedMaintenance' and properties.ImpactMitigationTime > now() and properties.ImpactStartTime < now(50d) and properties.LastUpdateTime >= ago(50d) and status == 'Active')|summarize arg_max(LastUpdateTime, *) by trackingId ) on trackingId| project description,trackingId,ImpactedService,regions,impactStartingTime,LastUpdateTime,impactMitigationTime,summary,link,subscriptionId"
+    $plannedMaintQueryResult = execute-graphQuery $plannedMaintQuery
+    "Planned Maintenance Count"
+    $plannedMaintQueryResult.Count
+
+
+$impactedResourceQuery="servicehealthresources| where type == 'microsoft.resourcehealth/events/impactedresources'| project id,resourceType=properties.targetResourceType,resourceId=properties.targetResourceId, resourceName=properties.resourceName, region=properties.targetRegion"
+    $impactedResourceResult = execute-graphQuery $impactedResourceQuery
+    "Impacted Resources"
+    ($impactedResourceResult|measure-object).Count
